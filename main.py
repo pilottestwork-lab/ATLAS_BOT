@@ -1,98 +1,82 @@
 import os
-import logging
 import threading
 import google.generativeai as genai
-import openai
 from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 from PIL import Image
 import io
 
-# 1. إعداد السيرفر للبقاء حياً على Render
+# 1. سيرفر Flask للبقاء أونلاين على Render
 app = Flask(__name__)
 @app.route('/')
 def home():
-    return "Professor Atlas is Online (Gemini 2.5 + DeepSeek)!", 200
+    return "Professor Atlas (Gemini 2.5 Edition) is Running!", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port)
 
-# 2. إعداد مفاتيح الـ API
+# 2. إعداد الموديل الجبار (Gemini 2.5 Flash)
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-DEEPSEEK_CLIENT = openai.OpenAI(
-    api_key=os.getenv("DEEPSEEK_API_KEY"),
-    base_url="https://api.deepseek.com"
-)
+MODEL_ID = "gemini-2.5-flash-aative-audio-dialog" # هذا هو المعرف التقني لنسخة 2.5 الشاملة
 
-# 3. وظيفة معالجة الصور عبر Gemini 2.5
-def ask_gemini_vision(image_data, prompt):
-    try:
-        model = genai.GenerativeModel("gemini-2.5-flash") # الموديل المطلوب
-        response = model.generate_content([prompt, image_data])
-        return response.text
-    except Exception as e:
-        if "429" in str(e):
-            return "⚠️ ضغط كبير على موديل الصور حالياً، حاول مجدداً بعد دقيقة."
-        return f"خطأ في تحليل الصورة: {str(e)}"
+# 3. معالجة كافة أنواع الرسائل (صوت، صورة، نص)
+async def handle_atlas_comprehensive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_msg = update.message
+    prompt = user_msg.text or user_msg.caption or "حلل هذا المحتوى طبياً"
+    status = await user_msg.reply_text("⏳ البروفيسور أطلس يراجع الحالة (Gemini 2.5)...")
 
-# 4. وظيفة معالجة النصوص عبر DeepSeek (مجاني ومستقر)
-def ask_deepseek_text(prompt):
-    try:
-        response = DEEPSEEK_CLIENT.chat.completions.create(
-            model="deepseek-chat",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"خطأ في محرك النصوص: {str(e)}"
-
-# 5. معالجة رسائل تليجرام
-async def handle_atlas_logic(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text or update.message.caption or "حلل هذه الحالة"
-    status_msg = await update.message.reply_text("⏳ البروفيسور أطلس يراجع الحالة...")
+    content_list = [prompt]
 
     try:
-        # إذا أرسل صورة أو ملف (استخدام Gemini 2.5)
-        if update.message.photo or update.message.document:
-            if update.message.photo:
-                file = await update.message.photo[-1].get_file()
-                file_bytes = await file.download_as_bytearray()
-                image = Image.open(io.BytesIO(file_bytes))
-                result = ask_gemini_vision(image, user_text)
-            else:
-                # معالجة الـ PDF عبر Gemini
-                doc = await update.message.document.get_file()
-                doc_bytes = await doc.download_as_bytearray()
-                pdf_part = {"mime_type": "application/pdf", "data": bytes(doc_bytes)}
-                result = ask_gemini_vision(pdf_part, user_text)
+        # أ. إذا أرسل صورة (أشعة/تحاليل)
+        if user_msg.photo:
+            file = await user_msg.photo[-1].get_file()
+            img_bytes = await file.download_as_bytearray()
+            image = Image.open(io.BytesIO(img_bytes))
+            content_list.append(image)
+
+        # ب. إذا أرسل بصمة صوتية (Native Audio)
+        elif user_msg.voice or user_msg.audio:
+            audio_file = await (user_msg.voice or user_msg.audio).get_file()
+            audio_bytes = await audio_file.download_as_bytearray()
+            audio_data = {"mime_type": "audio/ogg", "data": bytes(audio_bytes)}
+            content_list.append(audio_data)
+
+        # ج. إذا أرسل ملف PDF
+        elif user_msg.document and user_msg.document.mime_type == 'application/pdf':
+            doc = await user_msg.document.get_file()
+            doc_bytes = await doc.download_as_bytearray()
+            pdf_data = {"mime_type": "application/pdf", "data": bytes(doc_bytes)}
+            content_list.append(pdf_data)
+
+        # إرسال الطلب للموديل
+        model = genai.GenerativeModel(MODEL_ID)
+        response = model.generate_content(content_list)
         
-        # إذا أرسل نصاً فقط (استخدام DeepSeek)
-        else:
-            result = ask_deepseek_text(user_text)
-
-        # الرد على المستخدم
-        await update.message.reply_text(result)
+        await user_msg.reply_text(response.text)
 
     except Exception as e:
-        await update.message.reply_text(f"عذراً يا دكتور، حدثت مشكلة: {str(e)}")
+        # التعامل مع حد الـ 20 طلباً
+        if "429" in str(e):
+            await user_msg.reply_text("⚠️ يا دكتور، وصلنا لحد الـ 20 طلباً المجانية لـ Gemini 2.5. انتظر دقيقة وسأعود للعمل.")
+        else:
+            await user_msg.reply_text(f"حدث خطأ: {str(e)}")
     finally:
-        await status_msg.delete()
+        await status.delete()
 
 if __name__ == '__main__':
-    # تشغيل السيرفر في الخلفية
+    # تشغيل Flask
     threading.Thread(target=run_flask, daemon=True).start()
     
     # تشغيل البوت
     TOKEN = os.getenv("TELEGRAM_TOKEN")
-    app_bot = ApplicationBuilder().token(TOKEN).build()
-    app_bot.add_handler(MessageHandler(filters.ALL, handle_atlas_logic))
+    application = ApplicationBuilder().token(TOKEN).build()
+    application.add_handler(MessageHandler(filters.ALL, handle_atlas_comprehensive))
     
-    print("Professor Atlas is booting up...")
-    app_bot.run_polling()
-
-
+    print("Professor Atlas 2.5 is Online!")
+    application.run_polling()
 
 
 
