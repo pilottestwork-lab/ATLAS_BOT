@@ -7,7 +7,8 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 import google.generativeai as genai
 from PIL import Image
-import openai  # أضفنا مكتبة أوبن أي آي للربط مع ديب سيك
+import openai  # مكتبة ديب سيك
+
 # 1. إعداد السجلات
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -18,142 +19,135 @@ logging.basicConfig(
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+
+# إعداد جيمناي (للصور والملفات)
 genai.configure(api_key=GOOGLE_API_KEY)
-# --- هنا نضع الخطة البديلة (Fallback Logic) ---
-# --- دالة الخطة البديلة الثلاثية (Gemini 2.5 -> Gemini 1.5 -> DeepSeek) ---
-def safe_generate_content(content_list):
-    # المرحلة الأولى: Gemini 2.5 (الأذكى)
-    try:
-        model = genai.GenerativeModel(model_name="gemini-1.5-flash", system_instruction=SYSTEM_INSTRUCTION)
-        return model.generate_content(content_list).text
-    except Exception as e:
-        if "429" in str(e) or "quota" in str(e).lower():
-            logging.warning("حصة 2.5 نفدت، جاري الانتقال إلى Gemini 1.5...")
-            # المرحلة الثانية: Gemini 1.5 (الحصة الأكبر)
-            try:
-                model = genai.GenerativeModel(model_name="gemini-1.5-flash", system_instruction=SYSTEM_INSTRUCTION)
-                return model.generate_content(content_list).text
-            except Exception as e2:
-                # المرحلة الثالثة: DeepSeek (المنقذ الأخير)
-                if DEEPSEEK_API_KEY:
-                    logging.warning("جاري الانتقال إلى DeepSeek كخيار أخير...")
-                    try:
-                        client = openai.OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
-                        # تحويل المحتوى لنص بسيط لأن ديب سيك شات مخصص للنصوص
-                        text_content = str([c for c in content_list if isinstance(c, str)])
-                        response = client.chat.completions.create(
-                            model="deepseek-chat",
-                            messages=[
-                                {"role": "system", "content": SYSTEM_INSTRUCTION},
-                                {"role": "user", "content": text_content}
-                            ],
-                            stream=False
-                        )
-                        return response.choices[0].message.content
-                    except Exception as e3:
-                        return f"عذراً يا دكتور، جميع المحركات الطبية مشغولة حالياً. خطأ: {str(e3)}"
-                raise e2
-        raise e
-async def handle_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    status_msg = await update.message.reply_text("جاري التحليل بصفتي البروفيسور أطلس... ⏳")
-    content = []
-# 3. إعداد الموديل
+gemini_model = genai.GenerativeModel(
+    model_name="gemini-1.5-flash", # نستخدم 1.5 لأنه مستقر وحصته كبيرة
+    system_instruction="أنت البروفيسور أطلس. حلل هذه الصورة الطبية أو الملف بدقة وقدم تقريراً وافياً."
+)
+
+# إعداد ديب سيك (للنصوص)
+deepseek_client = openai.OpenAI(
+    api_key=DEEPSEEK_API_KEY, 
+    base_url="https://api.deepseek.com"
+)
+
+# التعليمات الأساسية لديب سيك
 SYSTEM_INSTRUCTION = """
-أنت البروفيسور أطلس، خبير أكاديمي طبي متخصص.
-دورك هو مساعدة الطلاب في حل الأسئلة الطبية، شرح صور الأشعة، وتحليل التقارير.
-عندما تستلم صورة سؤال، قم بحله وشرح السبب.
-عندما تستلم صورة أشعة، قدم تقريراً طبياً وافياً.
-إذا طلب الطالب حل أسئلة (MCQs)، قم بتحليل كل خيار ولماذا هو صح أو خطأ.
-لغة التواصل: العربية بشكل أساسي، مع ذكر المصطلحات الطبية بالإنجليزية بين أقواس.
+أنت البروفيسور أطلس، خبير أكاديمي طبي.
+دورك هو مساعدة الطلاب في الأسئلة الطبية وشرح الحالات.
+لغة التواصل: العربية بشكل أساسي.
 في نهاية كل رسالة، ذكرهم بالقناة: https://t.me/atlas_medical.
 """
 
-model = genai.GenerativeModel(
-    model_name="gemini-2.5-flash",
-    system_instruction=SYSTEM_INSTRUCTION
-)
-
-# --- سيرفر وهمي لإرضاء Render (حل مشكلة Timeout) ---
+# --- سيرفر وهمي لإرضاء Render ---
 flask_app = Flask(__name__)
 @flask_app.route('/')
 def health_check():
-    return "Professor Atlas is Alive!", 200
+    return "Professor Atlas is Online (Hybrid Mode)!", 200
 
 def run_flask():
-    # Render يمرر البورت في متغير بيئة اسمه PORT
     port = int(os.environ.get("PORT", 8000))
     flask_app.run(host='0.0.0.0', port=port)
+
+# --- دوال المعالجة (الذكاء الاصطناعي) ---
+
+# دالة التعامل مع ديب سيك (للنصوص)
+def ask_deepseek(text_prompt):
+    try:
+        response = deepseek_client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": SYSTEM_INSTRUCTION},
+                {"role": "user", "content": text_prompt}
+            ],
+            stream=False
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        # إذا فشل ديب سيك، نستخدم جيمناي كاحتياطي
+        logging.error(f"DeepSeek Error: {e}")
+        return str(gemini_model.generate_content(text_prompt).text)
+
+# دالة التعامل مع جيمناي (للوسائط)
+def ask_gemini_media(content_list):
+    try:
+        response = gemini_model.generate_content(content_list)
+        return response.text
+    except Exception as e:
+        return f"عذراً، حدث خطأ أثناء تحليل الملف/الصورة: {str(e)}"
 
 # --- دوال البوت ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("أهلاً بك يا دكتور! أنا البروفيسور أطلس. أرسل لي أي سؤال، صورة أشعة، أو ملف وسأقوم بتحليله فوراً.")
+    await update.message.reply_text("أهلاً بك دكتور! أنا البروفيسور أطلس.\n- أرسل سؤالاً نصياً (سيجيبك ديب سيك 🧠).\n- أرسل صورة أو ملف (سيحلله جيمناي 👁️).")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    content = []
+    status_msg = await update.message.reply_text("جاري التحليل... ⏳")
     
-    # معالجة النص
-    if update.message.text:
-        content.append(update.message.text)
-    
-    # معالجة الصور
-    if update.message.photo:
-        await update.message.reply_text("جاري تحليل الصورة طبياً... لحظة واحدة ⏳")
-        photo_file = await update.message.photo[-1].get_file()
-        photo_bytes = await photo_file.download_as_bytearray()
-        image = Image.open(io.BytesIO(photo_bytes))
-        content.append(image)
-        if update.message.caption:
-            content.append(update.message.caption)
-        else:
-            content.append("حلل هذه الصورة الطبية بدقة.")
-
-  # إذا كانت الرسالة ملف (PDF مثلاً)
-    if update.message.document:
-        doc_file = await update.message.document.get_file()
-        doc_byte_array = await doc_file.download_as_bytearray()
-        
-        # الحل هنا: تحويل bytearray إلى bytes ليفهمها Gemini
-        doc_bytes = bytes(doc_byte_array) 
-        
-        content.append({
-            "mime_type": update.message.document.mime_type,
-            "data": doc_bytes
-        })
-        content.append(update.message.caption if update.message.caption else "قم بتحليل هذا الملف الطبي بدقة")
-
-    if not content:
-        return
-
     try:
-        response = model.generate_content(content)
-        # تقسيم الرسائل الطويلة لتجنب خطأ تليجرام
-        full_response = response.text
-        if len(full_response) > 4000:
-            for i in range(0, len(full_response), 4000):
-                await update.message.reply_text(full_response[i:i+4000])
-        else:
-            await update.message.reply_text(full_response)
+        final_response = ""
+
+        # الحالة 1: المستخدم أرسل صورة (نستخدم Gemini)
+        if update.message.photo:
+            photo_file = await update.message.photo[-1].get_file()
+            photo_bytes = await photo_file.download_as_bytearray()
+            image = Image.open(io.BytesIO(photo_bytes))
+            
+            caption = update.message.caption or "حلل هذه الصورة الطبية"
+            final_response = ask_gemini_media([caption, image])
+
+        # الحالة 2: المستخدم أرسل ملف PDF أو مستند (نستخدم Gemini لأنه يدعم الملفات)
+        elif update.message.document:
+            doc_file = await update.message.document.get_file()
+            doc_data = await doc_file.download_as_bytearray()
+            
+            # تجهيز الملف لجيمناي
+            content_list = [
+                {"mime_type": update.message.document.mime_type, "data": bytes(doc_data)},
+                update.message.caption or "لخص وحلل هذا الملف الطبي"
+            ]
+            final_response = ask_gemini_media(content_list)
+
+        # الحالة 3: المستخدم أرسل نصاً فقط (نستخدم DeepSeek)
+        elif update.message.text:
+            user_text = update.message.text
+            final_response = ask_deepseek(user_text)
+
+        # إرسال الرد (مع تقسيم الرسائل الطويلة)
+        if final_response:
+            if len(final_response) > 4000:
+                for i in range(0, len(final_response), 4000):
+                    await update.message.reply_text(final_response[i:i+4000])
+            else:
+                await update.message.reply_text(final_response)
+        
     except Exception as e:
-        await update.message.reply_text(f"عذراً يا دكتور، حدث خطأ تقني: {str(e)}")
+        await update.message.reply_text(f"حدث خطأ غير متوقع: {str(e)}")
+    
+    finally:
+        # حذف رسالة "جاري التحليل" لترتيب المحادثة
+        try:
+            await status_msg.delete()
+        except:
+            pass
 
 # --- التشغيل الرئيسي ---
 if __name__ == '__main__':
-    if not TELEGRAM_TOKEN or not GOOGLE_API_KEY:
-        print("Error: المفاتيح غير موجودة!")
+    # تشغيل Flask
+    threading.Thread(target=run_flask, daemon=True).start()
+    
+    # تشغيل البوت
+    if not TELEGRAM_TOKEN:
+        print("Error: TELEGRAM_TOKEN missing")
     else:
-        # تشغيل السيرفر الوهمي في خيط (Thread) منفصل
-        threading.Thread(target=run_flask, daemon=True).start()
+        app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+        app.add_handler(CommandHandler('start', start))
+        app.add_handler(MessageHandler(filters.ALL, handle_message))
         
-        # تشغيل البوت
-        application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-        
-        # دمج كل أنواع الرسائل في معالج واحد
-        application.add_handler(CommandHandler('start', start))
-        application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.Document.ALL, handle_message))
-        
-        print("Professor Atlas is running with Flask health check...")
-        application.run_polling()
+        print("Professor Atlas Hybrid (DeepSeek + Gemini) is Running...")
+        app.run_polling()
 
 
 
