@@ -24,7 +24,7 @@ genai.configure(api_key=GOOGLE_API_KEY)
 def safe_generate_content(content_list):
     # المرحلة الأولى: Gemini 2.5 (الأذكى)
     try:
-        model = genai.GenerativeModel(model_name="gemini-2.5-flash", system_instruction=SYSTEM_INSTRUCTION)
+        model = genai.GenerativeModel(model_name="gemini-1.5-flash", system_instruction=SYSTEM_INSTRUCTION)
         return model.generate_content(content_list).text
     except Exception as e:
         if "429" in str(e) or "quota" in str(e).lower():
@@ -154,6 +154,7 @@ if __name__ == '__main__':
         
         print("Professor Atlas is running with Flask health check...")
         application.run_polling()
+
 
 
 
