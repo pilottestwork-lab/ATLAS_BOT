@@ -71,13 +71,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             content.append("حلل هذه الصورة الطبية بدقة.")
 
-    # معالجة الملفات (PDF)
+  # إذا كانت الرسالة ملف (PDF مثلاً)
     if update.message.document:
-        await update.message.reply_text("جاري قراءة الملف الطبي... لحظة واحدة ⏳")
         doc_file = await update.message.document.get_file()
-        doc_bytes = await doc_file.download_as_bytearray()
-        content.append({"mime_type": update.message.document.mime_type, "data": doc_bytes})
-        content.append(update.message.caption if update.message.caption else "حلل محتوى هذا الملف.")
+        doc_byte_array = await doc_file.download_as_bytearray()
+        
+        # الحل هنا: تحويل bytearray إلى bytes ليفهمها Gemini
+        doc_bytes = bytes(doc_byte_array) 
+        
+        content.append({
+            "mime_type": update.message.document.mime_type,
+            "data": doc_bytes
+        })
+        content.append(update.message.caption if update.message.caption else "قم بتحليل هذا الملف الطبي بدقة")
 
     if not content:
         return
@@ -111,4 +117,5 @@ if __name__ == '__main__':
         
         print("Professor Atlas is running with Flask health check...")
         application.run_polling()
+
 
