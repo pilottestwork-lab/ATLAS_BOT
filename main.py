@@ -19,7 +19,28 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 genai.configure(api_key=GOOGLE_API_KEY)
+# --- هنا نضع الخطة البديلة (Fallback Logic) ---
+def safe_generate_content(content_list):
+    """تحاول استخدام 2.5 أولاً، وإذا نفدت الحصة تنتقل لـ 1.5"""
+    primary_model = "gemini-2.5-flash" # الموديل المطلوب
+    backup_model = "gemini-1.5-flash"
+    
+    try:
+        # المحاولة بالموديل الأساسي
+        model = genai.GenerativeModel(primary_model)
+        return model.generate_content(content_list)
+    except Exception as e:
+        # إذا واجه خطأ الحصة (Quota 429)
+        if "429" in str(e) or "quota" in str(e).lower():
+            logging.warning("التبديل للموديل الاحتياطي بسبب ضغط الطلبات...")
+            model = genai.GenerativeModel(backup_model)
+            return model.generate_content(content_list)
+        else:
+            raise e
 
+async def handle_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status_msg = await update.message.reply_text("جاري التحليل بصفتي البروفيسور أطلس... ⏳")
+    content = []
 # 3. إعداد الموديل
 SYSTEM_INSTRUCTION = """
 أنت البروفيسور أطلس، خبير أكاديمي طبي متخصص.
@@ -117,5 +138,6 @@ if __name__ == '__main__':
         
         print("Professor Atlas is running with Flask health check...")
         application.run_polling()
+
 
 
