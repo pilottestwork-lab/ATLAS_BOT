@@ -23,7 +23,7 @@ genai.configure(api_key=GOOGLE_API_KEY)
 CHANNEL_LINK = "https://t.me/atlas_medical" 
 ADMIN_CONTACT = "@ATLAS_S_TEAM"
 
-# 2. إعداد الموديل (نفس الموديل اللي في صورتك: gemini-1.5-flash)
+# 2. إعداد الموديل (نفس الموديل اللي في صورتك: gemini-2.5-flash)
 # تعليمات البروفيسور أطلس
 SYSTEM_INSTRUCTION = """
 أنت البروفيسور أطلس، خبير أكاديمي طبي متخصص.
@@ -41,7 +41,7 @@ SYSTEM_INSTRUCTION = """
 """
 
 model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash",
+    model_name="gemini-2.5-flash",
     system_instruction=SYSTEM_INSTRUCTION
 )
 
@@ -94,3 +94,4 @@ if __name__ == '__main__':
         # تشغيل البوت
         print("Professor Atlas is running...")
         application.run_polling()
+
