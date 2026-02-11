@@ -7,7 +7,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 import google.generativeai as genai
 from PIL import Image
-
+import openai  # أضفنا مكتبة أوبن أي آي للربط مع ديب سيك
 # 1. إعداد السجلات
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -17,27 +17,43 @@ logging.basicConfig(
 # 2. إعداد المفاتيح
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 genai.configure(api_key=GOOGLE_API_KEY)
 # --- هنا نضع الخطة البديلة (Fallback Logic) ---
+# --- دالة الخطة البديلة الثلاثية (Gemini 2.5 -> Gemini 1.5 -> DeepSeek) ---
 def safe_generate_content(content_list):
-    """تحاول استخدام 2.5 أولاً، وإذا نفدت الحصة تنتقل لـ 1.5"""
-    primary_model = "gemini-2.5-flash" # الموديل المطلوب
-    backup_model = "gemini-1.5-flash"
-    
+    # المرحلة الأولى: Gemini 2.5 (الأذكى)
     try:
-        # المحاولة بالموديل الأساسي
-        model = genai.GenerativeModel(primary_model)
-        return model.generate_content(content_list)
+        model = genai.GenerativeModel(model_name="gemini-2.5-flash", system_instruction=SYSTEM_INSTRUCTION)
+        return model.generate_content(content_list).text
     except Exception as e:
-        # إذا واجه خطأ الحصة (Quota 429)
         if "429" in str(e) or "quota" in str(e).lower():
-            logging.warning("التبديل للموديل الاحتياطي بسبب ضغط الطلبات...")
-            model = genai.GenerativeModel(backup_model)
-            return model.generate_content(content_list)
-        else:
-            raise e
-
+            logging.warning("حصة 2.5 نفدت، جاري الانتقال إلى Gemini 1.5...")
+            # المرحلة الثانية: Gemini 1.5 (الحصة الأكبر)
+            try:
+                model = genai.GenerativeModel(model_name="gemini-1.5-flash", system_instruction=SYSTEM_INSTRUCTION)
+                return model.generate_content(content_list).text
+            except Exception as e2:
+                # المرحلة الثالثة: DeepSeek (المنقذ الأخير)
+                if DEEPSEEK_API_KEY:
+                    logging.warning("جاري الانتقال إلى DeepSeek كخيار أخير...")
+                    try:
+                        client = openai.OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
+                        # تحويل المحتوى لنص بسيط لأن ديب سيك شات مخصص للنصوص
+                        text_content = str([c for c in content_list if isinstance(c, str)])
+                        response = client.chat.completions.create(
+                            model="deepseek-chat",
+                            messages=[
+                                {"role": "system", "content": SYSTEM_INSTRUCTION},
+                                {"role": "user", "content": text_content}
+                            ],
+                            stream=False
+                        )
+                        return response.choices[0].message.content
+                    except Exception as e3:
+                        return f"عذراً يا دكتور، جميع المحركات الطبية مشغولة حالياً. خطأ: {str(e3)}"
+                raise e2
+        raise e
 async def handle_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("جاري التحليل بصفتي البروفيسور أطلس... ⏳")
     content = []
@@ -138,6 +154,7 @@ if __name__ == '__main__':
         
         print("Professor Atlas is running with Flask health check...")
         application.run_polling()
+
 
 
 
