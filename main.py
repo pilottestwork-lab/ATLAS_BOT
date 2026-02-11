@@ -55,7 +55,7 @@ def get_smart_response(user_id, content_list):
     for key in API_KEYS:
         try:
             genai.configure(api_key=key)
-            model = genai.GenerativeModel("gemini-2.5-flash") # الاسم التقني الصحيح
+            model = genai.GenerativeModel("gemini-2.5-pro") # الاسم التقني الصحيح
             
             # بدء محادثة بالذاكرة المخزنة
             chat = model.start_chat(history=user_memory[user_id])
@@ -121,6 +121,7 @@ if __name__ == '__main__':
     
     print("Professor Atlas 2.5 is now FULLY OPERATIONAL!")
     app_bot.run_polling()
+
 
 
 
