@@ -1,25 +1,36 @@
 
-import telebot
-import google.generativeai as genai
 import os
-import PIL.Image  # تصحيح استدعاء المكتبة
+import logging
+from telegram import Update
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
+import google.generativeai as genai
+from PIL import Image
+import io
 
-# إحضار المفاتيح بأمان من إعدادات Render (لا تضع الأرقام هنا)
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
+# إعدادات السجل (عشان لو فيه خطأ نعرف مكانه)
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 
-bot = telebot.TeleBot(BOT_TOKEN)
-genai.configure(api_key=GEMINI_API_KEY)
+# 1. إعداد مفاتيح Gemini و Telegram من متغيرات البيئة في Render
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# استخدام نموذج 1.5 Flash لأنه الأفضل للملفات والصور
-model = genai.GenerativeModel('gemini-1.5-flash')
+# تهيئة مكتبة Gemini
+genai.configure(api_key=GOOGLE_API_KEY)
 
 CHANNEL_LINK = "https://t.me/atlas_medical" 
 ADMIN_CONTACT = "@ATLAS_S_TEAM"
 
-# نص "شخصية" البروفيسور والتعليمات (System Prompt)
-SYSTEM_INSTRUCTIONS = """
-أنت الآن 'البروفيسور أطلس'، خبير واستشاري طبي أكاديمي. 
+# 2. إعداد الموديل (نفس الموديل اللي في صورتك: gemini-1.5-flash)
+# تعليمات البروفيسور أطلس
+SYSTEM_INSTRUCTION = """
+أنت البروفيسور أطلس، خبير أكاديمي طبي متخصص.
+دورك هو مساعدة الطلاب في حل الأسئلة الطبية، شرح صور الأشعة، وتحليل التقارير.
+عندما تستلم صورة سؤال، قم بحله وشرح السبب.
+عندما تستلم صورة أشعة، قدم تقريراً طبياً وافياً.
+كن دقيقاً، علمياً، واستخدم لهجة وقورة ومشجعة.
 مهامتك هي:
 1. الإجابة على أسئلة الطلاب الطبية بدقة متناهية.
 2. اتباع نظام 'التدقيق الثلاثي': (تحليل السؤال، مراجعة المصادر الطبية، ثم صياغة الإجابة النهائية).
@@ -29,54 +40,57 @@ SYSTEM_INSTRUCTIONS = """
 في نهاية كل رسالة، ذكرهم بالقناة: {https://t.me/atlas_medical}.
 """
 
+model = genai.GenerativeModel(
+    model_name="gemini-1.5-flash",
+    system_instruction=SYSTEM_INSTRUCTION
+)
 
-@bot.message_handler(commands=['start', 'help'])
-def send_welcome(message):
-    bot.reply_to(message, "أهلاً بك يا دكتور. أنا البروفيسور أطلس. أرسل سؤالك، صورة، أو ملف PDF الآن.")
+# --- دوال البوت ---
 
-# معالجة الملفات (PDF/Word)
-@bot.message_handler(content_types=['document'])
-def handle_docs(message):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("أهلاً بك يا دكتور! أنا البروفيسور أطلس. أرسل لي أي سؤال، صورة أشعة، أو ملف PDF وسأقوم بتحليله فوراً.")
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_text = update.message.text
+    # إرسال النص لـ Gemini
+    response = model.generate_content(user_text)
+    await update.message.reply_text(response.text)
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # 1. إخبار المستخدم أننا نعمل
+    await update.message.reply_text("جاري تحليل الصورة... لحظة واحدة ⏳")
+    
+    # 2. تحميل الصورة من تليجرام
+    photo_file = await update.message.photo[-1].get_file()
+    photo_bytes = await photo_file.download_as_bytearray()
+    
+    # 3. تحويلها لصيغة يفهمها Gemini
+    image = Image.open(io.BytesIO(photo_bytes))
+    
+    # 4. إذا كان مع الصورة كلام (Caption) نأخذه، وإلا نطلب شرحاً عاماً
+    prompt = update.message.caption if update.message.caption else "قم بتحليل هذه الصورة الطبية بالتفصيل."
+    
+    # 5. الإرسال للموديل
     try:
-        bot.send_chat_action(message.chat.id, 'upload_document')
-        file_info = bot.get_file(message.document.file_id)
-        downloaded_file = bot.download_file(file_info.file_path)
-        file_name = message.document.file_name
-        with open(file_name, "wb") as f:
-            f.write(downloaded_file)
+        response = model.generate_content([prompt, image])
+        await update.message.reply_text(response.text)
+    except Exception as e:
+        await update.message.reply_text(f"حدث خطأ أثناء تحليل الصورة: {str(e)}")
+
+# --- تشغيل البوت ---
+
+if __name__ == '__main__':
+    # التأكد من وجود التوكن
+    if not TELEGRAM_TOKEN or not GOOGLE_API_KEY:
+        print("Error: المفاتيح غير موجودة! تأكد من إضافتها في Render")
+    else:
+        application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+        # ربط الوظائف
+        application.add_handler(CommandHandler('start', start))
+        application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
+        application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
         
-        sample_file = genai.upload_file(path=file_name)
-        response = model.generate_content([SYSTEM_INSTRUCTIONS, "حلل الملف:", sample_file])
-        bot.reply_to(message, response.text, parse_mode="Markdown")
-        os.remove(file_name) 
-    except Exception as e:
-        bot.reply_to(message, "حدث خطأ في الملف.")
-
-# معالجة الصور
-@bot.message_handler(content_types=['photo'])
-def handle_photo(message):
-    try:
-        bot.send_chat_action(message.chat.id, 'typing')
-        file_info = bot.get_file(message.photo[-1].file_id)
-        downloaded_file = bot.download_file(file_info.file_path)
-        with open("image.jpg", "wb") as f:
-            f.write(downloaded_file)
-        
-        img = PIL.Image.open("image.jpg")
-        response = model.generate_content([SYSTEM_INSTRUCTIONS, "حلل هذه الصورة:", img])
-        bot.reply_to(message, response.text, parse_mode="Markdown")
-    except Exception as e:
-        bot.reply_to(message, "خطأ في تحليل الصورة.")
-
-# معالجة النصوص
-@bot.message_handler(func=lambda message: True)
-def handle_message(message):
-    try:
-        bot.send_chat_action(message.chat.id, 'typing')
-        response = model.generate_content(f"{SYSTEM_INSTRUCTIONS}\nسؤال الطالب: {message.text}")
-        bot.reply_to(message, response.text, parse_mode="Markdown")
-    except Exception as e:
-        bot.reply_to(message, "عذراً يا دكتور، حاول مجدداً.")
-
-print("Professor Atlas is now Online...")
-bot.infinity_polling()
+        # تشغيل البوت
+        print("Professor Atlas is running...")
+        application.run_polling()
