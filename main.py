@@ -5,8 +5,9 @@ import threading
 from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
-import google.generativeai as genai
 from PIL import Image
+# المكتبة البديلة للمحاكاة (تأكد من تثبيتها)
+from gemini_web_api import GeminiClient 
 
 # 1. إعداد السجلات
 logging.basicConfig(
@@ -14,109 +15,74 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# 2. إعداد المفاتيح
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+# 2. إعداد المفاتيح (من Render Environment Variables)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+# هنا نضع الكوكي بدلاً من الـ API Key
+GEMINI_COOKIE = os.getenv("GEMINI_COOKIE") 
 
-genai.configure(api_key=GOOGLE_API_KEY)
+# تهيئة "الجسر" (Bridge) باستخدام حسابك الشخصي
+try:
+    # نقوم بتمرير الكوكي للمحاكي
+    client = GeminiClient(GEMINI_COOKIE)
+    logging.info("تم تفعيل الجسر بنجاح باستخدام حسابك الشخصي!")
+except Exception as e:
+    logging.error(f"فشل الاتصال عبر الكوكيز: {e}")
 
-# 3. إعداد الموديل
-SYSTEM_INSTRUCTION = """
-أنت البروفيسور أطلس، خبير أكاديمي طبي متخصص.
-دورك هو مساعدة الطلاب في حل الأسئلة الطبية، شرح صور الأشعة، وتحليل التقارير.
-عندما تستلم صورة سؤال، قم بحله وشرح السبب.
-عندما تستلم صورة أشعة، قدم تقريراً طبياً وافياً.
-إذا طلب الطالب حل أسئلة (MCQs)، قم بتحليل كل خيار ولماذا هو صح أو خطأ.
-لغة التواصل: العربية بشكل أساسي، مع ذكر المصطلحات الطبية بالإنجليزية بين أقواس.
-في نهاية كل رسالة، ذكرهم بالقناة: https://t.me/atlas_medical.
-"""
-
-model = genai.GenerativeModel(
-    model_name="gemma-3-27B-it",
-    system_instruction=SYSTEM_INSTRUCTION
-)
-
-# --- سيرفر وهمي لإرضاء Render (حل مشكلة Timeout) ---
+# --- سيرفر Flask لإبقاء البوت حياً على Render ---
 flask_app = Flask(__name__)
 @flask_app.route('/')
 def health_check():
-    return "Professor Atlas is Alive!", 200
+    return "Professor Atlas Bridge is Alive!", 200
 
 def run_flask():
-    # Render يمرر البورت في متغير بيئة اسمه PORT
     port = int(os.environ.get("PORT", 8000))
     flask_app.run(host='0.0.0.0', port=port)
 
-# --- دوال البوت ---
+# --- دوال البوت المعدلة ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("أهلاً بك يا دكتور! أنا البروفيسور أطلس. أرسل لي أي سؤال، صورة أشعة، أو ملف وسأقوم بتحليله فوراً.")
+    await update.message.reply_text("أهلاً بك يا دكتور! أنا البروفيسور أطلس (نسخة الجسر). أرسل لي أي سؤال أو صورة.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    content = []
+    user_prompt = ""
     
-    # معالجة النص
+    # تحضير النص
     if update.message.text:
-        content.append(update.message.text)
+        user_prompt = update.message.text
+    elif update.message.caption:
+        user_prompt = update.message.caption
     
-    # معالجة الصور
-    if update.message.photo:
-        await update.message.reply_text("جاري تحليل الصورة طبياً... لحظة واحدة ⏳")
-        photo_file = await update.message.photo[-1].get_file()
-        photo_bytes = await photo_file.download_as_bytearray()
-        image = Image.open(io.BytesIO(photo_bytes))
-        content.append(image)
-        if update.message.caption:
-            content.append(update.message.caption)
-        else:
-            content.append("حلل هذه الصورة الطبية بدقة.")
-
-  # إذا كانت الرسالة ملف (PDF مثلاً)
-    if update.message.document:
-        doc_file = await update.message.document.get_file()
-        doc_byte_array = await doc_file.download_as_bytearray()
-        
-        # الحل هنا: تحويل bytearray إلى bytes ليفهمها Gemini
-        doc_bytes = bytes(doc_byte_array) 
-        
-        content.append({
-            "mime_type": update.message.document.mime_type,
-            "data": doc_bytes
-        })
-        content.append(update.message.caption if update.message.caption else "قم بتحليل هذا الملف الطبي بدقة")
-
-    if not content:
-        return
+    # إذا كانت هناك صورة (المكتبات غير الرسمية أحياناً تواجه صعوبة في رفع الصور)
+    # سنحاول معالجة النص أولاً لضمان عمل الجسر
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
     try:
-        response = model.generate_content(content)
-        # تقسيم الرسائل الطويلة لتجنب خطأ تليجرام
-        full_response = response.text
-        if len(full_response) > 4000:
-            for i in range(0, len(full_response), 4000):
-                await update.message.reply_text(full_response[i:i+4000])
-        else:
-            await update.message.reply_text(full_response)
+        # إضافة تعليمات البروفيسور أطلس كبادئة (لأن الكوكيز لا تدعم System Instruction رسمياً)
+        full_prompt = f"أنت البروفيسور أطلس، خبير أكاديمي طبي. أجب على السؤال التالي: {user_prompt}"
+        
+        # إرسال الطلب عبر الجسر
+        response = client.ask(full_prompt)
+        
+        # الرد على المستخدم
+        await update.message.reply_text(response.text + "\n\n🔗 https://t.me/atlas_medical")
+        
     except Exception as e:
-        await update.message.reply_text(f"عذراً يا دكتور، حدث خطأ تقني: {str(e)}")
+        logging.error(f"خطأ في الجسر: {e}")
+        await update.message.reply_text(f"عذراً يا دكتور، الجسر يحتاج تحديث كوكيز أو حدث خطأ: {str(e)}")
 
 # --- التشغيل الرئيسي ---
 if __name__ == '__main__':
-    if not TELEGRAM_TOKEN or not GOOGLE_API_KEY:
-        print("Error: المفاتيح غير موجودة!")
+    if not TELEGRAM_TOKEN or not GEMINI_COOKIE:
+        print("Error: TELEGRAM_TOKEN أو GEMINI_COOKIE مفقودة!")
     else:
-        # تشغيل السيرفر الوهمي في خيط (Thread) منفصل
+        # تشغيل سيرفر الصحة
         threading.Thread(target=run_flask, daemon=True).start()
         
-        # تشغيل البوت
+        # تشغيل البوت بنظام Polling
         application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
         
-        # دمج كل أنواع الرسائل في معالج واحد
         application.add_handler(CommandHandler('start', start))
         application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.Document.ALL, handle_message))
         
-        print("Professor Atlas is running with Flask health check...")
+        print("Professor Atlas Bridge is running...")
         application.run_polling()
-
-
-
