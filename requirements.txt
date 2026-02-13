@@ -1,7 +1,8 @@
-
+gemini-web-api
 requests
 python-telegram-bot
 google-generativeai
 pillow
 Flask
+
 
