@@ -1,99 +1,121 @@
 import os
+import logging
+import io
 import threading
-import requests
 from flask import Flask
 from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
+import google.generativeai as genai
+from PIL import Image
 
-# --- 1. الإعدادات والمفاتيح ---
-# مفتاح Groq وتوكن التلجرام يتم جلبهم من إعدادات Render للحماية
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+# 1. إعداد السجلات
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+
+# 2. إعداد المفاتيح
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# --- 2. إعدادات السيرفر والذاكرة ---
-app = Flask(__name__)
-user_memory = {} # الذاكرة: هنا بنخزن المحادثات لكل مستخدم
+genai.configure(api_key=GOOGLE_API_KEY)
 
-@app.route('/')
-def home():
-    return "Professor Atlas (DeepSeek Edition) is Online!", 200
+# 3. إعداد الموديل
+SYSTEM_INSTRUCTION = """
+أنت البروفيسور أطلس، خبير أكاديمي طبي متخصص.
+دورك هو مساعدة الطلاب في حل الأسئلة الطبية، شرح صور الأشعة، وتحليل التقارير.
+عندما تستلم صورة سؤال، قم بحله وشرح السبب.
+عندما تستلم صورة أشعة، قدم تقريراً طبياً وافياً.
+إذا طلب الطالب حل أسئلة (MCQs)، قم بتحليل كل خيار ولماذا هو صح أو خطأ.
+لغة التواصل: العربية بشكل أساسي، مع ذكر المصطلحات الطبية بالإنجليزية بين أقواس.
+في نهاية كل رسالة، ذكرهم بالقناة: https://t.me/atlas_medical.
+"""
+
+model = genai.GenerativeModel(
+    model_name="gemma-3-27B",
+    system_instruction=SYSTEM_INSTRUCTION
+)
+
+# --- سيرفر وهمي لإرضاء Render (حل مشكلة Timeout) ---
+flask_app = Flask(__name__)
+@flask_app.route('/')
+def health_check():
+    return "Professor Atlas is Alive!", 200
 
 def run_flask():
+    # Render يمرر البورت في متغير بيئة اسمه PORT
     port = int(os.environ.get("PORT", 8000))
-    app.run(host="0.0.0.0", port=port)
+    flask_app.run(host='0.0.0.0', port=port)
 
-# --- 3. وظيفة العقل الذكي (DeepSeek via Groq) ---
-def get_deepseek_response(user_id, user_text):
-    # 1. تجهيز الذاكرة للمستخدم الجديد
-    if user_id not in user_memory:
-        user_memory[user_id] = [
-            {"role": "system", "content": "أنت مساعد ذكي ومفيد."}
-        ]
-    
-    # 2. إضافة رسالة المستخدم الحالية للذاكرة
-    user_memory[user_id].append({"role": "user", "content": user_text})
+# --- دوال البوت ---
 
-    # 3. إعداد الاتصال بـ Groq
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    # نبعث الذاكرة كاملة عشان يفهم السياق
-    data = {
-        "model": "deepseek-r1-distill-llama-70b", # الموديل السريع والمجاني
-        "messages": user_memory[user_id]
-    }
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("أهلاً بك يا دكتور! أنا البروفيسور أطلس. أرسل لي أي سؤال، صورة أشعة، أو ملف وسأقوم بتحليله فوراً.")
 
-    try:
-        response = requests.post(url, headers=headers, json=data)
-        
-        if response.status_code == 200:
-            bot_reply = response.json()['choices'][0]['message']['content']
-            
-            # 4. حفظ رد البوت في الذاكرة للمرة الجاية
-            user_memory[user_id].append({"role": "assistant", "content": bot_reply})
-            
-            # تنظيف الذاكرة لو كبرت هلبا (نحتفظ بآخر 10 رسائل بس عشان السرعة)
-            if len(user_memory[user_id]) > 20:
-                user_memory[user_id] = user_memory[user_id][-10:]
-                
-            return bot_reply
-        else:
-            return f"خطأ من المصدر: {response.status_code}"
-            
-    except Exception as e:
-        return f"حدث خطأ في الاتصال: {str(e)}"
-
-# --- 4. معالجة رسائل تليجرام ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    user_id = msg.from_user.id
+    content = []
     
-    # نتأكد إن الرسالة نصية (لأن ديب سيك هذا ما يشوفش صور)
-    if not msg.text:
-        await msg.reply_text("عذراً، أنا حالياً أتعامل مع النصوص والأسئلة المكتوبة فقط 📝")
+    # معالجة النص
+    if update.message.text:
+        content.append(update.message.text)
+    
+    # معالجة الصور
+    if update.message.photo:
+        await update.message.reply_text("جاري تحليل الصورة طبياً... لحظة واحدة ⏳")
+        photo_file = await update.message.photo[-1].get_file()
+        photo_bytes = await photo_file.download_as_bytearray()
+        image = Image.open(io.BytesIO(photo_bytes))
+        content.append(image)
+        if update.message.caption:
+            content.append(update.message.caption)
+        else:
+            content.append("حلل هذه الصورة الطبية بدقة.")
+
+  # إذا كانت الرسالة ملف (PDF مثلاً)
+    if update.message.document:
+        doc_file = await update.message.document.get_file()
+        doc_byte_array = await doc_file.download_as_bytearray()
+        
+        # الحل هنا: تحويل bytearray إلى bytes ليفهمها Gemini
+        doc_bytes = bytes(doc_byte_array) 
+        
+        content.append({
+            "mime_type": update.message.document.mime_type,
+            "data": doc_bytes
+        })
+        content.append(update.message.caption if update.message.caption else "قم بتحليل هذا الملف الطبي بدقة")
+
+    if not content:
         return
 
-    # إظهار "جاري الكتابة..."
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    try:
+        response = model.generate_content(content)
+        # تقسيم الرسائل الطويلة لتجنب خطأ تليجرام
+        full_response = response.text
+        if len(full_response) > 4000:
+            for i in range(0, len(full_response), 4000):
+                await update.message.reply_text(full_response[i:i+4000])
+        else:
+            await update.message.reply_text(full_response)
+    except Exception as e:
+        await update.message.reply_text(f"عذراً يا دكتور، حدث خطأ تقني: {str(e)}")
 
-    # جلب الرد
-    response_text = get_deepseek_response(user_id, msg.text)
-    
-    # الرد على المستخدم
-    await msg.reply_text(response_text)
-
-# --- 5. التشغيل النهائي ---
+# --- التشغيل الرئيسي ---
 if __name__ == '__main__':
-    # تشغيل سيرفر Flask للبقاء حياً
-    threading.Thread(target=run_flask, daemon=True).start()
-    
-    # تشغيل البوت
-    app_bot = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app_bot.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    
-    print("Professor Atlas (DeepSeek) is ready!")
-    app_bot.run_polling()
+    if not TELEGRAM_TOKEN or not GOOGLE_API_KEY:
+        print("Error: المفاتيح غير موجودة!")
+    else:
+        # تشغيل السيرفر الوهمي في خيط (Thread) منفصل
+        threading.Thread(target=run_flask, daemon=True).start()
+        
+        # تشغيل البوت
+        application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+        
+        # دمج كل أنواع الرسائل في معالج واحد
+        application.add_handler(CommandHandler('start', start))
+        application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.Document.ALL, handle_message))
+        
+        print("Professor Atlas is running with Flask health check...")
+        application.run_polling()
+
 
