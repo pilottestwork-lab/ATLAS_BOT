@@ -32,7 +32,7 @@ SYSTEM_INSTRUCTION = """
 """
 
 model = genai.GenerativeModel(
-    model_name="gemini-2.5-Pro",
+    model_name="gemini-2.5-flash",
     system_instruction=SYSTEM_INSTRUCTION
 )
 
@@ -117,6 +117,7 @@ if __name__ == '__main__':
         
         print("Professor Atlas is running with Flask health check...")
         application.run_polling()
+
 
 
 
