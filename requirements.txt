@@ -1,6 +1,7 @@
-flask
-python-telegram-bot
+
 requests
+python-telegram-bot
+google-generativeai
 pillow
-openai
+Flask
 
