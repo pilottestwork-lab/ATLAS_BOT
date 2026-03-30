@@ -1,8 +1,7 @@
-python-telegram-bot
+pyTelegramBotAPI
+g4f
 flask
-requests
-google-generativeai
-pillow
+
 
 
 
