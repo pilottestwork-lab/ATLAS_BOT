@@ -24,7 +24,7 @@ def run_server():
 # ==========================================
 # 2. إعدادات البوت والذاكرة
 # ==========================================
-TOKEN = "8336981859:AAHc4vlRwEqTeglqWtSn7uvg8n5AlINDe0Q"
+TOKEN = "8336981859:AAEXlBTENdwXQOBhBPcgjIMmWAvLZnyQ6m0"
 bot = telebot.TeleBot(TOKEN)
 
 MEMORY_DIR = "users_history"
