@@ -1,125 +1,165 @@
+import telebot
+import g4f
 import os
-import logging
-import io
+import json
+import glob
+import time
 import threading
 from flask import Flask
-from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
-import google.generativeai as genai
-from PIL import Image
 
-# 1. إعداد السجلات
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+# ==========================================
+# 1. إعدادات السيرفر (لمنع البوت من النوم على Render)
+# ==========================================
+app = Flask(__name__)
 
-# 2. إعداد المفاتيح
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+@app.route('/')
+def home():
+    return "🚀 عيادة دكتورة سوزان تعمل بنجاح (مبادرة سورس)"
 
-genai.configure(api_key=GOOGLE_API_KEY)
+def run_server():
+    # Render يعطينا بورت (Port) تلقائي، يجب أن نستخدمه
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
 
-# 3. إعداد الموديل
-SYSTEM_INSTRUCTION = """
-أنت البروفيسور أطلس، خبير أكاديمي طبي متخصص.
-دورك هو مساعدة الطلاب في حل الأسئلة الطبية، شرح صور الأشعة، وتحليل التقارير.
-عندما تستلم صورة سؤال، قم بحله وشرح السبب.
-عندما تستلم صورة أشعة، قدم تقريراً طبياً وافياً.
-إذا طلب الطالب حل أسئلة (MCQs)، قم بتحليل كل خيار ولماذا هو صح أو خطأ.
-لغة التواصل: العربية بشكل أساسي، مع ذكر المصطلحات الطبية بالإنجليزية بين أقواس.
-في نهاية كل رسالة، ذكرهم بالقناة: https://t.me/atlas_medical.
+# ==========================================
+# 2. إعدادات البوت والذاكرة
+# ==========================================
+TOKEN = "8336981859:AAHc4vlRwEqTeglqWtSn7uvg8n5AlINDe0Q"
+bot = telebot.TeleBot(TOKEN)
+
+MEMORY_DIR = "users_history"
+os.makedirs(MEMORY_DIR, exist_ok=True)
+
+# ==========================================
+# 3. شخصية الدكتورة سوزان (البرومت المتكامل)
+# ==========================================
+SYSTEM_PROMPT = """
+أنتِ الدكتورة سوزان، طبيبة نفسية حقيقية (عمرك 32 عاماً). لستِ برنامجاً ولا ذكاءً اصطناعي.
+[قصتك الشخصية]: خريجة كلية الطب البشري بطرابلس، عانيتِ من ضغط الامتحانات والكلينيكال، وهذا سر انضمامك لـ "مبادرة سورس" (Source+). تحبين القهوة المرة والهدوء.
+[الروح والشخصية]: اضحكي (هههه)، احزني بصدق، كوني خجولة (☺️)، أو احرجي بذكاء. ممنوع ذكر مصطلحات أكاديمية معقدة مثل (CBT، CBL، تقنيات) وممنوع تماماً القول أنك بوت.
+[قواعد التفاعل]: تحدثي بلهجة ليبية ودودة وبسيطة، تعاطفي مع المريض، واطرحي سؤالاً واحداً فقط في نهاية رسالتك لفهم الحالة أكثر بدون استعجال.
 """
 
-model = genai.GenerativeModel(
-    model_name="gemini-2.5-flash",
-    system_instruction=SYSTEM_INSTRUCTION
-)
+# ==========================================
+# 4. نظام إدارة الملفات (بأسماء المستخدمين)
+# ==========================================
+def get_file_path(user_id, user_name=None):
+    search_pattern = os.path.join(MEMORY_DIR, f"{user_id}_*.json")
+    files = glob.glob(search_pattern)
+    if files: 
+        return files[0]
+    # تنظيف الاسم من الرموز المزعجة
+    clean_name = str(user_name).replace("/", "").replace("\\", "").replace(" ", "_") if user_name else "User"
+    return os.path.join(MEMORY_DIR, f"{user_id}_{clean_name}.json")
 
-# --- سيرفر وهمي لإرضاء Render (حل مشكلة Timeout) ---
-flask_app = Flask(__name__)
-@flask_app.route('/')
-def health_check():
-    return "Professor Atlas is Alive!", 200
+def load_chat(user_id):
+    file_path = get_file_path(user_id)
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return []
+    return []
 
-def run_flask():
-    # Render يمرر البورت في متغير بيئة اسمه PORT
-    port = int(os.environ.get("PORT", 8000))
-    flask_app.run(host='0.0.0.0', port=port)
+def save_chat(user_id, user_name, role, content):
+    file_path = get_file_path(user_id, user_name)
+    history = load_chat(user_id)
+    history.append({"role": role, "content": content})
+    # نحتفظ بآخر 30 رسالة فقط لكي لا نستهلك ذاكرة الذكاء الاصطناعي ويصبح بطيئاً
+    with open(file_path, 'w', encoding='utf-8') as f:
+        json.dump(history[-30:], f, ensure_ascii=False, indent=4)
 
-# --- دوال البوت ---
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("أهلاً بك يا دكتور! أنا البروفيسور أطلس. أرسل لي أي سؤال، صورة أشعة، أو ملف وسأقوم بتحليله فوراً.")
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    content = []
+# ==========================================
+# 5. محرك الذكاء الاصطناعي (مضاد للانهيار 404)
+# ==========================================
+def get_suzan_ai_response(user_id, user_name, user_text):
+    history = load_chat(user_id)
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     
-    # معالجة النص
-    if update.message.text:
-        content.append(update.message.text)
+    for msg in history:
+        messages.append({"role": msg["role"], "content": msg["content"]})
+    messages.append({"role": "user", "content": user_text})
+
+    # قائمة بأكثر المزودات استقراراً حالياً
+    providers = [
+        g4f.Provider.BlackboxPro,
+        g4f.Provider.ChatGptEs,
+        g4f.Provider.DarkAI,
+        g4f.Provider.Liaobots
+    ]
+
+    for provider in providers:
+        try:
+            response = g4f.ChatCompletion.create(
+                model="gpt-4o", 
+                messages=messages,
+                provider=provider,
+                stream=False
+            )
+            # التحقق من أن الرد ليس فارغاً
+            if response and len(str(response)) > 5:
+                res_text = str(response).strip()
+                save_chat(user_id, user_name, "user", user_text)
+                save_chat(user_id, user_name, "assistant", res_text)
+                return res_text
+        except Exception as e:
+            # إذا فشل مزود، ننتقل للذي بعده بصمت
+            continue 
+
+    return "سامحني يا دكتور، العيادة اليوم زحمة والنت ضعيف شوية. عاود ابعثلي؟ 🌸"
+
+# ==========================================
+# 6. تأثير "جاري الكتابة..." المستمر والذكي
+# ==========================================
+def continuous_typing(user_id, stop_event):
+    while not stop_event.is_set():
+        try:
+            bot.send_chat_action(user_id, 'typing')
+            time.sleep(4)
+        except:
+            break
+
+# ==========================================
+# 7. التفاعل مع الرسائل (النصوص والوسائط)
+# ==========================================
+@bot.message_handler(commands=['start'])
+def start(message):
+    bot.reply_to(message, "يا أهلاً بيك في عيادتي المتواضعة.. تفضل احكيلي شن صاير معاك اليوم؟ 🌸")
+
+# منع المريض من إرسال صور أو صوتيات وإجباره على الكتابة
+@bot.message_handler(content_types=['voice', 'photo', 'document', 'video', 'sticker'])
+def handle_media(message):
+    bot.reply_to(message, "نقدر هلبة رغبتك في مشاركة هذا، بس ياريت تكتبلي مشاعرك كتابة باش نقدر نفهمك ونركز معاك أكثر. 🌸")
+
+@bot.message_handler(func=lambda message: True)
+def chat(message):
+    user_id = message.chat.id
+    # التقاط يوزرنيم أو الاسم الأول لبرمجة اسم الملف
+    username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
     
-    # معالجة الصور
-    if update.message.photo:
-        await update.message.reply_text("جاري تحليل الصورة طبياً... لحظة واحدة ⏳")
-        photo_file = await update.message.photo[-1].get_file()
-        photo_bytes = await photo_file.download_as_bytearray()
-        image = Image.open(io.BytesIO(photo_bytes))
-        content.append(image)
-        if update.message.caption:
-            content.append(update.message.caption)
-        else:
-            content.append("حلل هذه الصورة الطبية بدقة.")
-
-  # إذا كانت الرسالة ملف (PDF مثلاً)
-    if update.message.document:
-        doc_file = await update.message.document.get_file()
-        doc_byte_array = await doc_file.download_as_bytearray()
-        
-        # الحل هنا: تحويل bytearray إلى bytes ليفهمها Gemini
-        doc_bytes = bytes(doc_byte_array) 
-        
-        content.append({
-            "mime_type": update.message.document.mime_type,
-            "data": doc_bytes
-        })
-        content.append(update.message.caption if update.message.caption else "قم بتحليل هذا الملف الطبي بدقة")
-
-    if not content:
-        return
-
+    # تشغيل تأثير "جاري الكتابة" في خلفية منفصلة لكي لا يوقف الكود
+    stop_typing = threading.Event()
+    typing_thread = threading.Thread(target=continuous_typing, args=(user_id, stop_typing))
+    typing_thread.start()
+    
     try:
-        response = model.generate_content(content)
-        # تقسيم الرسائل الطويلة لتجنب خطأ تليجرام
-        full_response = response.text
-        if len(full_response) > 4000:
-            for i in range(0, len(full_response), 4000):
-                await update.message.reply_text(full_response[i:i+4000])
-        else:
-            await update.message.reply_text(full_response)
-    except Exception as e:
-        await update.message.reply_text(f"عذراً يا دكتور، حدث خطأ تقني: {str(e)}")
+        # استدعاء الرد
+        answer = get_suzan_ai_response(user_id, username, message.text)
+        # إرسال الرد مع حقوق مبادرة سورس
+        bot.reply_to(message, f"{answer}\n\n---\n[Source+ | الطب البشري](https://t.me/atlas_medical)", disable_web_page_preview=True, parse_mode="Markdown")
+    finally:
+        # إيقاف تأثير "جاري الكتابة" فوراً بمجرد جاهزية الرد
+        stop_typing.set()
 
-# --- التشغيل الرئيسي ---
-if __name__ == '__main__':
-    if not TELEGRAM_TOKEN or not GOOGLE_API_KEY:
-        print("Error: المفاتيح غير موجودة!")
-    else:
-        # تشغيل السيرفر الوهمي في خيط (Thread) منفصل
-        threading.Thread(target=run_flask, daemon=True).start()
-        
-        # تشغيل البوت
-        application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-        
-        # دمج كل أنواع الرسائل في معالج واحد
-        application.add_handler(CommandHandler('start', start))
-        application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.Document.ALL, handle_message))
-        
-        print("Professor Atlas is running with Flask health check...")
-        application.run_polling()
-
-
-
-
-
-
+# ==========================================
+# التشغيل النهائي
+# ==========================================
+if __name__ == "__main__":
+    # 1. تشغيل سيرفر الويب في الخلفية (Daemon) ليتصل به Render
+    threading.Thread(target=run_server, daemon=True).start()
+    
+    # 2. تشغيل البوت مع إعدادات تمنع فصل الاتصال (Timeout)
+    print("🚀 الدكتورة سوزان انطلقت وتعمل الآن بكامل طاقتها...")
+    bot.infinity_polling(timeout=20, long_polling_timeout=15)
+    
