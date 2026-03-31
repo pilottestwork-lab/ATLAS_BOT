@@ -1,6 +1,7 @@
 pyTelegramBotAPI
-g4f
+groq
 flask
+
 
 
 
