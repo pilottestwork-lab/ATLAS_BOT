@@ -23,7 +23,7 @@ def run_server():
 # 2. إعدادات البوت والـ API
 # ==========================================
 # تم تعديل حرف G ليكون g صغير كما تتطلب حماية شركة Groq
-GROQ_KEY = "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"
+GROQ_KEY = "Gsk_E5LZ7jmGKjGPYrVBX5pCWGdyb3FYFXycXLU8O6jERoh0j5SrSVsg"
 client = Groq(api_key=GROQ_KEY)
 
 # التوكن الجديد لقتل أي تعارض 409
